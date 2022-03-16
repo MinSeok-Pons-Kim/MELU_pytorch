@@ -14,7 +14,7 @@ from MeLU import user_preference_estimator
 import argparse
 import torch
 import time
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from tqdm import tqdm
 def parse_args():
     parser = argparse.ArgumentParser([],description='Fast Context Adaptation via Meta-Learning (CAVIA),'
