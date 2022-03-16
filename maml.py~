@@ -14,13 +14,13 @@ from MeLU import user_preference_estimator
 import argparse
 import torch
 import time
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from tqdm import tqdm
 def parse_args():
     parser = argparse.ArgumentParser([],description='Fast Context Adaptation via Meta-Learning (CAVIA),'
                                                  'Clasification experiments.')
 
-    parser.add_argument('--seed', type=int, default=53)
+    parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--task', type=str, default='multi', help='problem setting: sine or celeba')
     parser.add_argument('--tasks_per_metaupdate', type=int, default=32, help='number of tasks in each batch per meta-update')
 
@@ -245,9 +245,6 @@ def evaluate_test(args, model,  dataloader):
             loss_all.append(F.l1_loss(y_qry[i], model(x_qry[i])).item())
     loss_all = np.array(loss_all)
     print('{}+/-{}'.format(np.mean(loss_all), 1.96*np.std(loss_all,0)/np.sqrt(len(loss_all))))
-   
-
-            
 
 if __name__ == '__main__':
     args = parse_args()
@@ -257,7 +254,8 @@ if __name__ == '__main__':
         utils.set_seed(args.seed)
         code_root = os.path.dirname(os.path.realpath(__file__))
         mode_path = utils.get_path_from_args(args)
-        mode_path = '9b8290dd3f63cbafcd141ba21282c783'
+        #mode_path = '9b8290dd3f63cbafcd141ba21282c783'
+        mode_path =  'wefsd1234trhgfdsfretyutuytrefd33'
         path = '{}/{}_result_files/'.format(code_root, args.task) + mode_path
         logger = utils.load_obj(path)
         model = logger.valid_model[-1]

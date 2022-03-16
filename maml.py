@@ -20,7 +20,7 @@ def parse_args():
     parser = argparse.ArgumentParser([],description='Fast Context Adaptation via Meta-Learning (CAVIA),'
                                                  'Clasification experiments.')
 
-    parser.add_argument('--seed', type=int, default=53)
+    parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--task', type=str, default='multi', help='problem setting: sine or celeba')
     parser.add_argument('--tasks_per_metaupdate', type=int, default=32, help='number of tasks in each batch per meta-update')
 
@@ -40,7 +40,7 @@ def parse_args():
     parser.add_argument('--embedding_dim', type=int, default=32, help='num of workers to use')
     parser.add_argument('--first_fc_hidden_dim', type=int, default=64, help='num of workers to use')
     parser.add_argument('--second_fc_hidden_dim', type=int, default=64, help='num of workers to use')
-    parser.add_argument('--num_epoch', type=int, default=30, help='num of workers to use')
+    parser.add_argument('--num_epoch', type=int, default=100, help='num of workers to use')
     parser.add_argument('--num_genre', type=int, default=25, help='num of workers to use')
     parser.add_argument('--num_director', type=int, default=2186, help='num of workers to use')
     parser.add_argument('--num_actor', type=int, default=8030, help='num of workers to use')
@@ -254,7 +254,8 @@ if __name__ == '__main__':
         utils.set_seed(args.seed)
         code_root = os.path.dirname(os.path.realpath(__file__))
         mode_path = utils.get_path_from_args(args)
-        mode_path = '9b8290dd3f63cbafcd141ba21282c783'
+        #mode_path = '9b8290dd3f63cbafcd141ba21282c783'
+        mode_path =  'wefsd1234trhgfdsfretyutuytrefd33'
         path = '{}/{}_result_files/'.format(code_root, args.task) + mode_path
         logger = utils.load_obj(path)
         model = logger.valid_model[-1]

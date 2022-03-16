@@ -126,6 +126,9 @@ class Metamovie(Dataset):
         with open("{}/{}_y.json".format(dataset_path, self.state), encoding="utf-8") as f:
             self.dataset_split_y = json.loads(f.read())            
         length = len(self.dataset_split.keys())
+
+        self.final_index = list(self.dataset_split.keys())
+        '''
         self.final_index = []
         for _, user_id in tqdm(enumerate(list(self.dataset_split.keys()))):
             u_id = int(user_id)
@@ -135,6 +138,7 @@ class Metamovie(Dataset):
                 continue
             else:
                 self.final_index.append(user_id)
+        '''
          
 
     def __getitem__(self, item):
