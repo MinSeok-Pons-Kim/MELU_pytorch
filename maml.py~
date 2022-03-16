@@ -245,6 +245,9 @@ def evaluate_test(args, model,  dataloader):
             loss_all.append(F.l1_loss(y_qry[i], model(x_qry[i])).item())
     loss_all = np.array(loss_all)
     print('{}+/-{}'.format(np.mean(loss_all), 1.96*np.std(loss_all,0)/np.sqrt(len(loss_all))))
+   
+
+            
 
 if __name__ == '__main__':
     args = parse_args()
