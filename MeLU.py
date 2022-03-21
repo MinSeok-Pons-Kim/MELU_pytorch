@@ -38,18 +38,18 @@ class user_preference_estimator(torch.nn.Module):
         self.final_part = nn.Sequential(self.fc1, nn.ReLU(), self.fc2, nn.ReLU(), self.linear_out)
     
     def forward(self, x, training = True):
-        rate_idx = x[:, 0]
-        genre_idx = x[:, 1:26]
-        director_idx = x[:, 26:2212]
-        actor_idx = x[:, 2212:10242]
-        gender_idx = x[:, 10242]
-        age_idx = x[:, 10243]
-        occupation_idx = x[:, 10244]
-        area_idx = x[:, 10245]
+        rate_idx = x[:, :, 0]
+        genre_idx = x[:, :, 1:26]
+        director_idx = x[:, :, 26:2212]
+        actor_idx = x[:, :, 2212:10242]
+        gender_idx = x[:, :, 10242]
+        age_idx = x[:, :, 10243]
+        occupation_idx = x[:, :, 10244]
+        area_idx = x[:, :, 10245]
 
         item_emb = self.item_emb(rate_idx, genre_idx, director_idx, actor_idx)
         user_emb = self.user_emb(gender_idx, age_idx, occupation_idx, area_idx)
-        x = torch.cat((item_emb, user_emb), 1)
+        x = torch.cat((item_emb, user_emb), -1)
         x = self.final_part(x)
         return x
 

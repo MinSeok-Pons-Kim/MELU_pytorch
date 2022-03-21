@@ -37,10 +37,10 @@ class item(torch.nn.Module):
 
     def forward(self, rate_idx, genre_idx, director_idx, actors_idx, vars=None):
         rate_emb = self.embedding_rate(rate_idx)
-        genre_emb = self.embedding_genre(genre_idx.float()) / torch.sum(genre_idx.float(), 1).view(-1, 1)
-        director_emb = self.embedding_director(director_idx.float()) / torch.sum(director_idx.float(), 1).view(-1, 1)
-        actors_emb = self.embedding_actor(actors_idx.float()) / torch.sum(actors_idx.float(), 1).view(-1, 1)
-        return torch.cat((rate_emb, genre_emb, director_emb, actors_emb), 1)
+        genre_emb = self.embedding_genre(genre_idx.float()) / torch.sum(genre_idx.float(), -1).unsqueeze(2)
+        director_emb = self.embedding_director(director_idx.float()) / torch.sum(director_idx.float(), -1).unsqueeze(2)
+        actors_emb = self.embedding_actor(actors_idx.float()) / torch.sum(actors_idx.float(), -1).unsqueeze(2)
+        return torch.cat((rate_emb, genre_emb, director_emb, actors_emb), -1)
 
 
 class user(torch.nn.Module):
@@ -77,4 +77,4 @@ class user(torch.nn.Module):
         age_emb = self.embedding_age(age_idx)
         occupation_emb = self.embedding_occupation(occupation_idx)
         area_emb = self.embedding_area(area_idx)
-        return torch.cat((gender_emb, age_emb, occupation_emb, area_emb), 1)
+        return torch.cat((gender_emb, age_emb, occupation_emb, area_emb), -1)

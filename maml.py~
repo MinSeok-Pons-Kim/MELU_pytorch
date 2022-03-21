@@ -14,7 +14,7 @@ from MeLU import user_preference_estimator
 import argparse
 import torch
 import time
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+#os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from tqdm import tqdm
 def parse_args():
     parser = argparse.ArgumentParser([],description='Fast Context Adaptation via Meta-Learning (CAVIA),'
@@ -35,12 +35,13 @@ def parse_args():
 
     parser.add_argument('--data_root', type=str, default="./movielens/ml-1m", help='path to data root')
     parser.add_argument('--num_workers', type=int, default=4, help='num of workers to use')
+    parser.add_argument('--metric', type=str, default='["NDCG","HR"]', help='metrics: NDCG, HR')
     parser.add_argument('--test', action='store_true', default=False, help='num of workers to use')
     
     parser.add_argument('--embedding_dim', type=int, default=32, help='num of workers to use')
     parser.add_argument('--first_fc_hidden_dim', type=int, default=64, help='num of workers to use')
     parser.add_argument('--second_fc_hidden_dim', type=int, default=64, help='num of workers to use')
-    parser.add_argument('--num_epoch', type=int, default=30, help='num of workers to use')
+    parser.add_argument('--num_epoch', type=int, default=100, help='num of workers to use')
     parser.add_argument('--num_genre', type=int, default=25, help='num of workers to use')
     parser.add_argument('--num_director', type=int, default=2186, help='num of workers to use')
     parser.add_argument('--num_actor', type=int, default=8030, help='num of workers to use')
@@ -60,11 +61,12 @@ def parse_args():
     return args
 
 
-def run(args, num_workers=1, log_interval=100, verbose=True, save_path=None):
+def run(args, log_interval=100, verbose=True, save_path=None):
     code_root = os.path.dirname(os.path.realpath(__file__))
     if not os.path.isdir('{}/{}_result_files/'.format(code_root, args.task)):
         os.mkdir('{}/{}_result_files/'.format(code_root, args.task))
-    path = '{}/{}_result_files/'.format(code_root, args.task) + utils.get_path_from_args(args)
+    #path = '{}/{}_result_files/'.format(code_root, args.task) + utils.get_path_from_args(args)
+    path = '{}/{}_result_files/'.format(code_root, args.task) + str(args.seed)
     print('File saved in {}'.format(path))
 
     if os.path.exists(path + '.pkl') and not args.rerun:
@@ -95,53 +97,52 @@ def run(args, num_workers=1, log_interval=100, verbose=True, save_path=None):
     dataloader_train = DataLoader(Metamovie(args),
                                      batch_size=1,num_workers=args.num_workers)
     for epoch in range(args.num_epoch):
-        
+
         x_spt, y_spt, x_qry, y_qry = [],[],[],[]
         iter_counter = 0
+
         for step, batch in enumerate(dataloader_train):
-            if len(x_spt)<args.tasks_per_metaupdate:
-                x_spt.append(batch[0][0].cuda())
-                y_spt.append(batch[1][0].cuda())
-                x_qry.append(batch[2][0].cuda())
-                y_qry.append(batch[3][0].cuda())
-                if not len(x_spt)==args.tasks_per_metaupdate:
-                    continue
-            
-            if len(x_spt) != args.tasks_per_metaupdate:
-                continue
+            x_spt = batch[0][0].cuda()
+            x_qry = batch[1][0].cuda()
 
             # initialise meta-gradient
             meta_grad = copy.deepcopy(meta_grad_init)
             loss_pre = []
             loss_after = []
-            for i in range(args.tasks_per_metaupdate): 
-                loss_pre.append(F.mse_loss(model(x_qry[i]), y_qry[i]).item())
-                fast_parameters = model.final_part.parameters()
-                for weight in model.final_part.parameters():
-                    weight.fast = None
-                for k in range(args.num_grad_steps_inner):
-                    logits = model(x_spt[i])
-                    loss = F.mse_loss(logits, y_spt[i])
-                    grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
-                    fast_parameters = []
-                    for k, weight in enumerate(model.final_part.parameters()):
-                        if weight.fast is None:
-                            weight.fast = weight - args.lr_inner * grad[k] #create weight.fast 
-                        else:
-                            weight.fast = weight.fast - args.lr_inner * grad[k]  
-                        fast_parameters.append(weight.fast)         
+            #loss_pre.append(F.mse_loss(model(x_qry[i]), y_qry[i]).item())
+            loss_pre.append(ranking_loss(model(x_qry)).item())
+            fast_parameters = model.final_part.parameters()
+            for weight in model.final_part.parameters():
+                weight.fast = None
+            for k in range(args.num_grad_steps_inner):
+                logits = model(x_spt)
+                #loss = F.mse_loss(logits, y_spt[i])
+                loss = ranking_loss(logits)
+                grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
+                fast_parameters = []
+                for k, weight in enumerate(model.final_part.parameters()):
+                    if weight.fast is None:
+                        weight.fast = weight - args.lr_inner * grad[k] #create weight.fast
+                    else:
+                        weight.fast = weight.fast - args.lr_inner * grad[k]
+                    fast_parameters.append(weight.fast)
 
-                logits_q = model(x_qry[i])
-                # loss_q will be overwritten and just keep the loss_q on last update step.
-                loss_q = F.mse_loss(logits_q, y_qry[i])
-                loss_after.append(loss_q.item())
-                task_grad_test = torch.autograd.grad(loss_q, model.parameters())
-                
-                for g in range(len(task_grad_test)):
-                    meta_grad[g] += task_grad_test[g].detach()
-                    
+            logits_q = model(x_qry)
+            # loss_q will be overwritten and just keep the loss_q on last update step.
+            #loss_q = F.mse_loss(logits_q, y_qry[i])
+            loss_q = ranking_loss(logits_q)
+            loss_after.append(loss_q.item())
+            task_grad_test = torch.autograd.grad(loss_q, model.parameters())
+
+            for g in range(len(task_grad_test)):
+                meta_grad[g] += task_grad_test[g].detach()
+
+
             # -------------- meta update --------------
-            
+
+            if step<1 or step%args.tasks_per_metaupdate!=0:
+                continue
+
             meta_optimiser.zero_grad()
 
             # set gradients of parameters manually
@@ -169,71 +170,48 @@ def run(args, num_workers=1, log_interval=100, verbose=True, save_path=None):
             start_time = time.time()
             
             iter_counter += 1
+
         if epoch % (2) == 0:
             print('saving model at iter', epoch)
             logger.valid_model.append(copy.deepcopy(model))
 
+
     return logger, model
 
 
-def evaluate(iter_counter, args, model, logger, dataloader, save_path):
-    logger.prepare_inner_loop(iter_counter, mode='valid')
 
-    for c, batch in enumerate(dataloader):
-        x_spt = batch[0].cuda()
-        y_spt = batch[1].cuda()
-        x_qry = batch[2].cuda()
-        y_qry = batch[3].cuda()
+def ranking_loss(predictions: torch.Tensor) -> torch.Tensor:
+    """
+    BPR ranking loss with optimization on multiple negative samples
+    @{Recurrent neural networks with top-k gains for session-based recommendations}
+    :param predictions: [batch_size, -1], the first column for positive, the rest for negative
+    :return:
+    """
+    pos_pred, neg_pred = predictions[:, 0], predictions[:, 1:2] # 1 pos : 1 neg
 
-        for i in range(x_spt.shape[0]):
+    loss = - torch.nn.LogSigmoid()(pos_pred - neg_pred[:,0]).mean()
+    # ↑ For numerical stability, we use 'softplus(-x)' instead of '-log_sigmoid(x)'
+    return loss
 
-            # -------------- inner update --------------
 
-            logger.log_pre_update(iter_counter,
-                                  x_spt[i], y_spt[i],
-                                  x_qry[i], y_qry[i],
-                                  model, mode='valid')
-            fast_parameters = model.parameters()
-            for weight in model.parameters():
-                weight.fast = None
-            for k in range(args.num_grad_steps_eval):
-                logits = model(x_spt[i])
-                loss = F.cross_entropy(logits, y_spt[i])
-                grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
-                fast_parameters = []
-                for k, weight in enumerate(model.parameters()):
-                    #for usage of weight.fast, please see Linear_fw, Conv_fw in backbone.py 
-                    if weight.fast is None:
-                        weight.fast = weight - args.lr_inner * grad[k] #create weight.fast 
-                    else:
-                        weight.fast = weight.fast - args.lr_inner * grad[k]  
-                    fast_parameters.append(weight.fast)
-
-            logger.log_post_update(iter_counter, x_spt[i], y_spt[i],
-                                          x_qry[i], y_qry[i], model, mode='valid')
-            
-    # this will take the mean over the batches
-    logger.summarise_inner_loop(mode='valid')
-
-    # keep track of best models
-    logger.update_best_model(model, save_path)
-
-def evaluate_test(args, model,  dataloader):
+def evaluate_test(args, model, dataloader):
     model.eval()
     loss_all = []
     for c, batch in tqdm(enumerate(dataloader)):
         x_spt = batch[0].cuda()
-        y_spt = batch[1].cuda()
-        x_qry = batch[2].cuda()
-        y_qry = batch[3].cuda()
+        x_qry = batch[1].cuda()
+        #y_spt = batch[1].cuda()
+        #x_qry = batch[2].cuda()
+        #y_qry = batch[3].cuda()
         for i in range(x_spt.shape[0]):
             # -------------- inner update --------------
             fast_parameters = model.final_part.parameters()
             for weight in model.final_part.parameters():
                 weight.fast = None
             for k in range(args.num_grad_steps_inner):
-                logits = model(x_spt[i])
-                loss = F.mse_loss(logits, y_spt[i])
+                logits = model(x_spt)
+                #loss = F.mse_loss(logits, y_spt[i])
+                loss = ranking_loss(logits)
                 grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
                 fast_parameters = []
                 for k, weight in enumerate(model.final_part.parameters()):
@@ -242,14 +220,37 @@ def evaluate_test(args, model,  dataloader):
                     else:
                         weight.fast = weight.fast - args.lr_inner * grad[k]  
                     fast_parameters.append(weight.fast)
-            loss_all.append(F.l1_loss(y_qry[i], model(x_qry[i])).item())
-    loss_all = np.array(loss_all)
+            #loss_all.append(F.l1_loss(y_qry[i], model(x_qry[i])).item())
+    #loss_all = np.array(loss_all)
     print('{}+/-{}'.format(np.mean(loss_all), 1.96*np.std(loss_all,0)/np.sqrt(len(loss_all))))
+
+def evaluate_method(predictions: np.ndarray, topk: list, metrics: list) -> Dict[str, float]:
+    """
+    :param predictions: (-1, n_candidates) shape, the first column is the score for ground-truth item
+    :param topk: top-K values list
+    :param metrics: metrics string list
+    :return: a result dict, the keys are metrics@topk
+    """
+    evaluations = dict()
+    sort_idx = (-predictions).argsort(axis=1)
+    gt_rank = np.argwhere(sort_idx == 0)[:, 1] + 1
+    for k in topk:
+        hit = (gt_rank <= k)
+        for metric in metrics:
+            key = '{}@{}'.format(metric, k)
+            if metric == 'HR':
+                evaluations[key] = hit.mean(dtype=np.float16)
+            elif metric == 'NDCG':
+                evaluations[key] = (hit / np.log2(gt_rank + 1)).mean(dtype=np.float16)
+            else:
+                raise ValueError('Undefined evaluation metric: {}.'.format(metric))
+    return evaluations
+
 
 if __name__ == '__main__':
     args = parse_args()
     if not args.test:
-        run(args, num_workers=1, log_interval=100, verbose=True, save_path=None)
+        run(args, log_interval=100, verbose=True, save_path=None)
     else:
         utils.set_seed(args.seed)
         code_root = os.path.dirname(os.path.realpath(__file__))
@@ -263,6 +264,3 @@ if __name__ == '__main__':
                                      batch_size=1,num_workers=args.num_workers)
         evaluate_test(args, model, dataloader_test)
     # --- settings ---
-
-
-

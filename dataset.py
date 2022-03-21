@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 import random
+from random import randint, choice
 import  re
 import datetime
 import pandas as pd
@@ -35,6 +36,7 @@ class movielens_1m(object):
         )
 
         score_data['time'] = score_data["timestamp"].map(lambda x: datetime.datetime.fromtimestamp(x))
+        self.n_users, self.n_items = score_data.user_id.max()+1, score_data.movie_id.max()+1
         score_data = score_data.drop(["timestamp"], axis=1)
         return profile_data, item_data, score_data
     
@@ -88,6 +90,8 @@ class Metamovie(Dataset):
         occupation_list = load_list("{}/m_occupation.txt".format(dataset_path))
         zipcode_list = load_list("{}/m_zipcode.txt".format(dataset_path))
 
+        self.user_clicked_set = pickle.load(open("{}/user_clicked_set.pkl".format(dataset_path), 'rb'))
+
         self.dataset = movielens_1m()
         
         master_path = self.dataset_path
@@ -124,7 +128,7 @@ class Metamovie(Dataset):
         with open("{}/{}.json".format(dataset_path, self.state), encoding="utf-8") as f:
             self.dataset_split = json.loads(f.read())
         with open("{}/{}_y.json".format(dataset_path, self.state), encoding="utf-8") as f:
-            self.dataset_split_y = json.loads(f.read())            
+            self.dataset_split_y = json.loads(f.read())
         length = len(self.dataset_split.keys())
 
         self.final_index = list(self.dataset_split.keys())
@@ -139,8 +143,10 @@ class Metamovie(Dataset):
             else:
                 self.final_index.append(user_id)
         '''
-         
 
+
+    ''' 
+    # function for explicit feedback (original)
     def __getitem__(self, item):
         user_id = self.final_index[item]
         u_id = int(user_id)
@@ -150,6 +156,7 @@ class Metamovie(Dataset):
         tmp_x = np.array(self.dataset_split[str(u_id)])
         tmp_y = np.array(self.dataset_split_y[str(u_id)])
         
+        # (# of user-item interactions, feature_size)
         support_x_app = None
         for m_id in tmp_x[indices[:-10]]:
             m_id = int(m_id)
@@ -170,6 +177,61 @@ class Metamovie(Dataset):
         support_y_app = torch.FloatTensor(tmp_y[indices[:-10]])
         query_y_app = torch.FloatTensor(tmp_y[indices[-10:]])
         return support_x_app, support_y_app.view(-1,1), query_x_app, query_y_app.view(-1,1)
+    ''' 
         
+    # function for implicit feedback
+    # retrieve user-wise interaction history and a random negative item
+    def __getitem__(self, item):
+        user_id = self.final_index[item]
+        u_id = int(user_id)
+        seen_movie_len = len(self.dataset_split[str(u_id)])
+        indices = list(range(seen_movie_len))
+        random.shuffle(indices)
+        tmp_x = np.array(self.dataset_split[str(u_id)])
+        support_x_app = None
+
+        support_x_app = torch.empty([len(tmp_x[indices[:-10]]), 2, 10246], dtype=torch.long)
+        support_x_app[:, :, 10242:10246] = self.user_dict[u_id] # user info
+        # 0~10241 items, 10242~10245 users
+        for m_idx, m_id in enumerate(tmp_x[indices[:-10]]):
+            m_id_negs = self._sample_neg_items(u_id, num_neg=1, support=True)
+            m_id = int(m_id)
+            support_x_app[m_idx, 0, 0:10242] = self.movie_dict[m_id] # positive item
+            for idx, m_id_neg in enumerate(m_id_negs):
+                support_x_app[m_idx, idx+1, 0:10242] = self.movie_dict[m_id_neg.item()]
+
+        num_neg = 1 if (self.partition == 'train') else 99
+        query_x_app = torch.empty([10, 1+num_neg, 10246], dtype=torch.long)
+        query_x_app[:, :, 10242:10246] = self.user_dict[u_id] # user info
+
+        for m_idx, m_id in enumerate(tmp_x[indices[-10:]]):
+            m_id_negs = self._sample_neg_items(u_id, num_neg=num_neg, support=True)
+            m_id = int(m_id)
+            query_x_app[m_idx, 0, 0:10242] = self.movie_dict[m_id] # positive item
+            for idx, m_id_neg in enumerate(m_id_negs):
+                query_x_app[m_idx, idx+1, 0:10242] = self.movie_dict[m_id_neg.item()]
+
+        # (# of user-item interactions, pos_len+neg_len, feature_size)
+        return support_x_app, query_x_app
+
+
     def __len__(self):
         return len(self.final_index)
+
+    def _sample_neg_items(self, u_id, num_neg=1, support=True):
+        r"""Sample positive (for meta_batch) and negative items (for meta and current batch).
+        For training: randomly sample 1 item.
+        For testing: randomly sample 99 item.
+        """
+        neg_items = torch.zeros(num_neg, dtype=torch.int64)
+        user_clicked_set = self.user_clicked_set[u_id]
+        for neg in range(num_neg):
+            neg_item = self._randint_w_exclude(user_clicked_set)
+            neg_items[neg] = neg_item
+
+        return neg_items
+
+    def _randint_w_exclude(self, clicked_set):
+        randItem = randint(1, self.dataset.n_items-1)
+        return self._randint_w_exclude(clicked_set) if (randItem in clicked_set) or (randItem not in self.movie_dict.keys()) else randItem
+
