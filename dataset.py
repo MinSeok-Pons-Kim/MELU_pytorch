@@ -118,6 +118,8 @@ class Metamovie(Dataset):
             if test_way is not None:
                 if test_way == 'old':
                     self.state = 'warm_state'
+                elif test_way == 'old_user':
+                    self.state = 'user_old_state'
                 elif test_way == 'new_user':
                     self.state = 'user_cold_state'
                 elif test_way == 'new_item':
@@ -190,10 +192,10 @@ class Metamovie(Dataset):
         tmp_x = np.array(self.dataset_split[str(u_id)])
         support_x_app = None
 
-        support_x_app = torch.empty([len(tmp_x[indices[:-10]]), 2, 10246], dtype=torch.long)
+        support_x_app = torch.empty([len(tmp_x[indices[-20:-10]]), 2, 10246], dtype=torch.long)
         support_x_app[:, :, 10242:10246] = self.user_dict[u_id] # user info
         # 0~10241 items, 10242~10245 users
-        for m_idx, m_id in enumerate(tmp_x[indices[:-10]]):
+        for m_idx, m_id in enumerate(tmp_x[indices[-20:-10]]):
             m_id_negs = self._sample_neg_items(u_id, num_neg=1, support=True)
             m_id = int(m_id)
             support_x_app[m_idx, 0, 0:10242] = self.movie_dict[m_id] # positive item
@@ -202,17 +204,20 @@ class Metamovie(Dataset):
 
         num_neg = 1 if (self.partition == 'train') else 99
         query_x_app = torch.empty([10, 1+num_neg, 10246], dtype=torch.long)
+        query_x_app_idx = torch.empty([10, 1+num_neg], dtype=torch.long)
         query_x_app[:, :, 10242:10246] = self.user_dict[u_id] # user info
 
         for m_idx, m_id in enumerate(tmp_x[indices[-10:]]):
             m_id_negs = self._sample_neg_items(u_id, num_neg=num_neg, support=True)
             m_id = int(m_id)
             query_x_app[m_idx, 0, 0:10242] = self.movie_dict[m_id] # positive item
+            query_x_app_idx[m_idx, 0] = m_id
+            query_x_app_idx[m_idx, 1:num_neg+1] = m_id_negs
             for idx, m_id_neg in enumerate(m_id_negs):
                 query_x_app[m_idx, idx+1, 0:10242] = self.movie_dict[m_id_neg.item()]
 
         # (# of user-item interactions, pos_len+neg_len, feature_size)
-        return support_x_app, query_x_app
+        return support_x_app, query_x_app, query_x_app_idx
 
 
     def __len__(self):
@@ -223,7 +228,7 @@ class Metamovie(Dataset):
         For training: randomly sample 1 item.
         For testing: randomly sample 99 item.
         """
-        neg_items = torch.zeros(num_neg, dtype=torch.int64)
+        neg_items = torch.empty(num_neg, dtype=torch.int64)
         user_clicked_set = self.user_clicked_set[u_id]
         for neg in range(num_neg):
             neg_item = self._randint_w_exclude(user_clicked_set)

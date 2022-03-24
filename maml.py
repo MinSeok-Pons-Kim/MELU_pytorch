@@ -14,6 +14,7 @@ from MeLU import user_preference_estimator
 import argparse
 import torch
 import time
+from typing import NoReturn, List, Dict
 #os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from tqdm import tqdm
 def parse_args():
@@ -36,6 +37,8 @@ def parse_args():
     parser.add_argument('--data_root', type=str, default="./movielens/ml-1m", help='path to data root')
     parser.add_argument('--num_workers', type=int, default=4, help='num of workers to use')
     parser.add_argument('--metric', type=str, default='["NDCG","HR"]', help='metrics: NDCG, HR')
+    parser.add_argument('--test_way', type=str, default='old', help='')
+    parser.add_argument('--eval_folder', type=str, default='eval_result', help='')
     parser.add_argument('--test', action='store_true', default=False, help='num of workers to use')
     
     parser.add_argument('--embedding_dim', type=int, default=32, help='num of workers to use')
@@ -94,7 +97,7 @@ def run(args, log_interval=100, verbose=True, save_path=None):
     logger.args = args
     # initialise the starting point for the meta gradient (it's faster to copy this than to create new object)
     meta_grad_init = [0 for _ in range(len(model.state_dict()))]
-    dataloader_train = DataLoader(Metamovie(args),
+    dataloader_train = DataLoader(Metamovie(args), shuffle=True,
                                      batch_size=1,num_workers=args.num_workers)
     for epoch in range(args.num_epoch):
 
@@ -194,12 +197,16 @@ def ranking_loss(predictions: torch.Tensor) -> torch.Tensor:
     return loss
 
 
-def evaluate_test(args, model, dataloader):
+def evaluate_test(args, model, dataloader, test_way):
     model.eval()
     loss_all = []
-    for c, batch in tqdm(enumerate(dataloader)):
-        x_spt = batch[0].cuda()
-        x_qry = batch[1].cuda()
+    n_users = len(dataloader)
+    item_idx = torch.empty([n_users, 10, 100], dtype=torch.long)
+    predictions = torch.empty([n_users, 10, 100])
+    print("Test!")
+    for idx, batch in tqdm(enumerate(dataloader)):
+        x_spt = batch[0][0].cuda()
+        x_qry = batch[1][0].cuda()
         #y_spt = batch[1].cuda()
         #x_qry = batch[2].cuda()
         #y_qry = batch[3].cuda()
@@ -216,13 +223,20 @@ def evaluate_test(args, model, dataloader):
                 fast_parameters = []
                 for k, weight in enumerate(model.final_part.parameters()):
                     if weight.fast is None:
-                        weight.fast = weight - args.lr_inner * grad[k] #create weight.fast 
+                        weight.fast = weight - args.lr_inner * grad[k] #create weight.fast
                     else:
-                        weight.fast = weight.fast - args.lr_inner * grad[k]  
+                        weight.fast = weight.fast - args.lr_inner * grad[k]
                     fast_parameters.append(weight.fast)
+
+        # Inference (user_wise)
+
+        predictions[idx] = model(x_qry).squeeze(-1).detach().cpu()
+        item_idx[idx] = batch[2][0]
+            # save prediction result
             #loss_all.append(F.l1_loss(y_qry[i], model(x_qry[i])).item())
-    #loss_all = np.array(loss_all)
-    print('{}+/-{}'.format(np.mean(loss_all), 1.96*np.std(loss_all,0)/np.sqrt(len(loss_all))))
+    torch.save(predictions, '_'.join([args.eval_folder+'/', 'total_preds_10', test_way, str(args.seed), '.pt']))
+    torch.save(item_idx, '_'.join([args.eval_folder+'/', 'total_item_idx_10', test_way, str(args.seed), '.pt']))
+    #print('{}+/-{}'.format(np.mean(loss_all), 1.96*np.std(loss_all,0)/np.sqrt(len(loss_all))))
 
 
 def evaluate_method(predictions: np.ndarray, topk: list, metrics: list) -> Dict[str, float]:
@@ -240,9 +254,9 @@ def evaluate_method(predictions: np.ndarray, topk: list, metrics: list) -> Dict[
         for metric in metrics:
             key = '{}@{}'.format(metric, k)
             if metric == 'HR':
-                evaluations[key] = hit.mean(dtype=np.float16)
+                evaluations[key] = hit.mean().astype(np.float64)
             elif metric == 'NDCG':
-                evaluations[key] = (hit / np.log2(gt_rank + 1)).mean(dtype=np.float16)
+                evaluations[key] = (hit / np.log2(gt_rank + 1)).mean().astype(np.float64)
             else:
                 raise ValueError('Undefined evaluation metric: {}.'.format(metric))
     return evaluations
@@ -257,11 +271,12 @@ if __name__ == '__main__':
         code_root = os.path.dirname(os.path.realpath(__file__))
         mode_path = utils.get_path_from_args(args)
         #mode_path = '9b8290dd3f63cbafcd141ba21282c783'
-        mode_path =  'wefsd1234trhgfdsfretyutuytrefd33'
+        #mode_path =  'wefsd1234trhgfdsfretyutuytrefd33'
+        mode_path = str(args.seed)
         path = '{}/{}_result_files/'.format(code_root, args.task) + mode_path
         logger = utils.load_obj(path)
         model = logger.valid_model[-1]
-        dataloader_test = DataLoader(Metamovie(args,partition='test',test_way='old'),#old, new_user, new_item, new_item_user
+        dataloader_test = DataLoader(Metamovie(args,partition='test',test_way=args.test_way),#old, new_user, new_item, new_item_user
                                      batch_size=1,num_workers=args.num_workers)
-        evaluate_test(args, model, dataloader_test)
+        evaluate_test(args, model, dataloader_test, args.test_way)
     # --- settings ---
