@@ -38,6 +38,7 @@ class movielens_1m(object):
         score_data['time'] = score_data["timestamp"].map(lambda x: datetime.datetime.fromtimestamp(x))
         self.n_users, self.n_items = score_data.user_id.max()+1, score_data.movie_id.max()+1
         score_data = score_data.drop(["timestamp"], axis=1)
+        self.item_ids =  score_data.movie_id.unique()
         return profile_data, item_data, score_data
     
 def item_converting(row, rate_list, genre_list, director_list, actor_list):
@@ -114,8 +115,10 @@ class Metamovie(Dataset):
             self.user_dict = pickle.load(open("{}/m_user_dict.pkl".format(master_path), "rb"))
         if partition == 'train' or partition == 'valid':
             self.state = 'warm_state'
+            self.training = True
         else:
             if test_way is not None:
+                self.training = False
                 if test_way == 'old':
                     self.state = 'warm_state'
                 elif test_way == 'old_user':
@@ -131,6 +134,13 @@ class Metamovie(Dataset):
             self.dataset_split = json.loads(f.read())
         with open("{}/{}_y.json".format(dataset_path, self.state), encoding="utf-8") as f:
             self.dataset_split_y = json.loads(f.read())
+        with open("{}/global_popularity.json".format(dataset_path), encoding="utf-8") as f:
+            pop_dict = json.loads(f.read())
+            if type(next(iter(pop_dict.keys()))) == str:
+                pop_dict = {int(key): pop_dict[key] for key in pop_dict}
+            self.dataset_split_popularity = pop_dict
+
+
         length = len(self.dataset_split.keys())
 
         self.final_index = list(self.dataset_split.keys())
@@ -146,6 +156,15 @@ class Metamovie(Dataset):
                 self.final_index.append(user_id)
         '''
 
+        self.test_buffer = torch.empty([1, 3704, 10246], dtype=torch.long)
+        for idx, item_id in enumerate(self.dataset.item_ids):
+            self.test_buffer[0, idx, 0:10242] = self.movie_dict[item_id]
+
+        self.test_buffer_idx = torch.tensor(self.dataset.item_ids).view(1, -1).long()
+
+        self.test_popularity = torch.empty([1, 3704, 1], dtype=torch.long)
+        for idx, item_id in enumerate(self.dataset.item_ids):
+            self.test_popularity[0, idx, 0] = pop_dict[item_id]
 
     ''' 
     # function for explicit feedback (original)
@@ -180,7 +199,7 @@ class Metamovie(Dataset):
         query_y_app = torch.FloatTensor(tmp_y[indices[-10:]])
         return support_x_app, support_y_app.view(-1,1), query_x_app, query_y_app.view(-1,1)
     ''' 
-        
+
     # function for implicit feedback
     # retrieve user-wise interaction history and a random negative item
     def __getitem__(self, item):
@@ -188,36 +207,63 @@ class Metamovie(Dataset):
         u_id = int(user_id)
         seen_movie_len = len(self.dataset_split[str(u_id)])
         indices = list(range(seen_movie_len))
-        random.shuffle(indices)
+        # random.shuffle(indices) # do not disturb chronological order
         tmp_x = np.array(self.dataset_split[str(u_id)])
         support_x_app = None
 
-        support_x_app = torch.empty([len(tmp_x[indices[-20:-10]]), 2, 10246], dtype=torch.long)
+        support_x_app = torch.empty([len(tmp_x[indices[:-10]]), 2, 10246], dtype=torch.long)
         support_x_app[:, :, 10242:10246] = self.user_dict[u_id] # user info
+        support_x_app_pop = torch.empty([len(tmp_x[indices[:-10]]), 2, 1], dtype=torch.double)
         # 0~10241 items, 10242~10245 users
-        for m_idx, m_id in enumerate(tmp_x[indices[-20:-10]]):
+        for m_idx, m_id in enumerate(tmp_x[indices[:-10]]):
             m_id_negs = self._sample_neg_items(u_id, num_neg=1, support=True)
             m_id = int(m_id)
             support_x_app[m_idx, 0, 0:10242] = self.movie_dict[m_id] # positive item
+            support_x_app_pop[m_idx, 0] = self.dataset_split_popularity[m_id] # positive item
             for idx, m_id_neg in enumerate(m_id_negs):
-                support_x_app[m_idx, idx+1, 0:10242] = self.movie_dict[m_id_neg.item()]
+                support_x_app[m_idx, idx+1, 0:10242] = self.movie_dict[m_id_neg.item()] # negative item
+                #support_x_app[m_idx, idx+1, 10246] = self.dataset_split_popularity[m_id_neg.item()]
+                try:
+                    support_x_app_pop[m_idx, idx+1] = self.dataset_split_popularity[m_id_neg.item()] # positive item
+                except Exception as e:
+                    support_x_app_pop[m_idx, idx+1] = 0.000291 # lowest item popularity
 
-        num_neg = 1 if (self.partition == 'train') else 99
-        query_x_app = torch.empty([10, 1+num_neg, 10246], dtype=torch.long)
-        query_x_app_idx = torch.empty([10, 1+num_neg], dtype=torch.long)
-        query_x_app[:, :, 10242:10246] = self.user_dict[u_id] # user info
+        num_neg = 1 if (self.partition == 'train') else self.dataset.n_items
+        #query_x_app = torch.empty([1, num_neg+1, 10247], dtype=torch.long)
+        #query_x_app_idx = torch.empty([1, num_neg+1], dtype=torch.long)
 
-        for m_idx, m_id in enumerate(tmp_x[indices[-10:]]):
-            m_id_negs = self._sample_neg_items(u_id, num_neg=num_neg, support=True)
-            m_id = int(m_id)
-            query_x_app[m_idx, 0, 0:10242] = self.movie_dict[m_id] # positive item
-            query_x_app_idx[m_idx, 0] = m_id
-            query_x_app_idx[m_idx, 1:num_neg+1] = m_id_negs
-            for idx, m_id_neg in enumerate(m_id_negs):
-                query_x_app[m_idx, idx+1, 0:10242] = self.movie_dict[m_id_neg.item()]
+
+
+
+        if self.training:
+            query_x_app = torch.empty([10, num_neg+1, 10246], dtype=torch.long)
+            query_x_app[:, :, 10242:10246] = self.user_dict[u_id] # user info
+            query_x_app_idx = torch.empty([10, num_neg+1], dtype=torch.long)
+            query_x_app_pop = torch.empty([10, num_neg+1,1], dtype=torch.double)
+
+            for m_idx, m_id in enumerate(tmp_x[indices[-10:]]):
+                m_id_negs = self._sample_neg_items(u_id, num_neg=num_neg, support=True)
+                m_id = int(m_id)
+                query_x_app[m_idx, 0, 0:10242] = self.movie_dict[m_id] # positive item
+                query_x_app_pop[m_idx, 0] = self.dataset_split_popularity[m_id] # positive item
+                query_x_app_idx[m_idx, 0] = m_id
+                query_x_app_idx[m_idx, 1:num_neg+1] = m_id_negs
+                for idx, m_id_neg in enumerate(m_id_negs):
+                    query_x_app[m_idx, idx+1, 0:10242] = self.movie_dict[m_id_neg.item()]
+                    try:
+                        query_x_app_pop[m_idx, idx+1] = self.dataset_split_popularity[m_id_neg.item()]
+                    except Exception as e:
+                        query_x_app_pop[m_idx, idx+1] = 0.000291
+
+
+        else:
+            query_x_app = self.test_buffer
+            query_x_app_idx = self.test_buffer_idx
+            query_x_app_pop = self.test_popularity
+        # total prediction values
 
         # (# of user-item interactions, pos_len+neg_len, feature_size)
-        return support_x_app, query_x_app, query_x_app_idx
+        return support_x_app, query_x_app, query_x_app_idx, tmp_x[indices[:-10]], support_x_app_pop, query_x_app_pop
 
 
     def __len__(self):

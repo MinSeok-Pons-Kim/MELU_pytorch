@@ -10,10 +10,11 @@ from torch.utils.data import DataLoader
 import util as utils
 from dataset import Metamovie
 from logger import Logger
-from MeLU import user_preference_estimator
+from MeLU import user_preference_estimator, PD
 import argparse
 import torch
 import time
+import pickle
 from typing import NoReturn, List, Dict
 #os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from tqdm import tqdm
@@ -36,6 +37,7 @@ def parse_args():
 
     parser.add_argument('--data_root', type=str, default="./movielens/ml-1m", help='path to data root')
     parser.add_argument('--num_workers', type=int, default=4, help='num of workers to use')
+    parser.add_argument('--model_name', type=str, default='', help='')
     parser.add_argument('--metric', type=str, default='["NDCG","HR"]', help='metrics: NDCG, HR')
     parser.add_argument('--test_way', type=str, default='old', help='')
     parser.add_argument('--eval_folder', type=str, default='eval_result', help='')
@@ -44,7 +46,7 @@ def parse_args():
     parser.add_argument('--embedding_dim', type=int, default=32, help='num of workers to use')
     parser.add_argument('--first_fc_hidden_dim', type=int, default=64, help='num of workers to use')
     parser.add_argument('--second_fc_hidden_dim', type=int, default=64, help='num of workers to use')
-    parser.add_argument('--num_epoch', type=int, default=100, help='num of workers to use')
+    parser.add_argument('--num_epoch', type=int, default=30, help='num of workers to use')
     parser.add_argument('--num_genre', type=int, default=25, help='num of workers to use')
     parser.add_argument('--num_director', type=int, default=2186, help='num of workers to use')
     parser.add_argument('--num_actor', type=int, default=8030, help='num of workers to use')
@@ -69,7 +71,7 @@ def run(args, log_interval=100, verbose=True, save_path=None):
     if not os.path.isdir('{}/{}_result_files/'.format(code_root, args.task)):
         os.mkdir('{}/{}_result_files/'.format(code_root, args.task))
     #path = '{}/{}_result_files/'.format(code_root, args.task) + utils.get_path_from_args(args)
-    path = '{}/{}_result_files/'.format(code_root, args.task) + str(args.seed)
+    path = '{}/{}_result_files/'.format(code_root, args.task) + str(args.seed) + str(args.model_name)
     print('File saved in {}'.format(path))
 
     if os.path.exists(path + '.pkl') and not args.rerun:
@@ -84,7 +86,15 @@ def run(args, log_interval=100, verbose=True, save_path=None):
     # -------------------- training ---------------------------
 
     # initialise model
-    model = user_preference_estimator(args).cuda()
+    if args.model_name == '':
+        print("default preference estimator")
+        model = user_preference_estimator(args).cuda()
+    elif args.model_name == 'PD':
+        print("PD")
+        model = PD(args).cuda()
+    else:
+        print("Wrong model name")
+        sys.exit(1)
 
     model.train()
     print(sum([param.nelement() for param in model.parameters()]))
@@ -113,12 +123,19 @@ def run(args, log_interval=100, verbose=True, save_path=None):
             loss_pre = []
             loss_after = []
             #loss_pre.append(F.mse_loss(model(x_qry[i]), y_qry[i]).item())
-            loss_pre.append(ranking_loss(model(x_qry)).item())
+            x_qry_pred = model(x_qry)
+            if args.model_name == 'PD':
+                x_qry_pred = x_qry_pred *(batch[5][0].cuda()**0.1)
+
+            loss_pre.append(ranking_loss(x_qry_pred).item())
             fast_parameters = model.final_part.parameters()
             for weight in model.final_part.parameters():
                 weight.fast = None
             for k in range(args.num_grad_steps_inner):
                 logits = model(x_spt)
+                if args.model_name == 'PD':
+                    logits = logits *(batch[4][0].cuda()**0.1)
+
                 #loss = F.mse_loss(logits, y_spt[i])
                 loss = ranking_loss(logits)
                 grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
@@ -131,6 +148,9 @@ def run(args, log_interval=100, verbose=True, save_path=None):
                     fast_parameters.append(weight.fast)
 
             logits_q = model(x_qry)
+            if args.model_name == 'PD':
+                logits_q = logits_q *(batch[5][0].cuda()**0.1)
+
             # loss_q will be overwritten and just keep the loss_q on last update step.
             #loss_q = F.mse_loss(logits_q, y_qry[i])
             loss_q = ranking_loss(logits_q)
@@ -201,15 +221,13 @@ def evaluate_test(args, model, dataloader, test_way):
     model.eval()
     loss_all = []
     n_users = len(dataloader)
-    item_idx = torch.empty([n_users, 10, 100], dtype=torch.long)
-    predictions = torch.empty([n_users, 10, 100])
+    item_idx = torch.empty([n_users, 3704], dtype=torch.long)
+    predictions = torch.empty([n_users, 3704])
+    supports = []
     print("Test!")
     for idx, batch in tqdm(enumerate(dataloader)):
         x_spt = batch[0][0].cuda()
         x_qry = batch[1][0].cuda()
-        #y_spt = batch[1].cuda()
-        #x_qry = batch[2].cuda()
-        #y_qry = batch[3].cuda()
         for i in range(x_spt.shape[0]):
             # -------------- inner update --------------
             fast_parameters = model.final_part.parameters()
@@ -217,6 +235,8 @@ def evaluate_test(args, model, dataloader, test_way):
                 weight.fast = None
             for k in range(args.num_grad_steps_inner):
                 logits = model(x_spt)
+                if args.model_name == 'PD':
+                    logits = logits *(batch[4][0].cuda()**0.1)
                 #loss = F.mse_loss(logits, y_spt[i])
                 loss = ranking_loss(logits)
                 grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
@@ -234,8 +254,10 @@ def evaluate_test(args, model, dataloader, test_way):
         item_idx[idx] = batch[2][0]
             # save prediction result
             #loss_all.append(F.l1_loss(y_qry[i], model(x_qry[i])).item())
-    torch.save(predictions, '_'.join([args.eval_folder+'/', 'total_preds_10', test_way, str(args.seed), '.pt']))
-    torch.save(item_idx, '_'.join([args.eval_folder+'/', 'total_item_idx_10', test_way, str(args.seed), '.pt']))
+        supports.append(batch[3][0].tolist())
+    torch.save(supports, '_'.join([args.eval_folder+'/', 'total_sup', test_way+args.model_name, str(args.seed), '.pt']))
+    torch.save(predictions, '_'.join([args.eval_folder+'/', 'total_preds', test_way+args.model_name, str(args.seed), '.pt']))
+    torch.save(item_idx, '_'.join([args.eval_folder+'/', 'total_item_idx', test_way+args.model_name, str(args.seed), '.pt']))
     #print('{}+/-{}'.format(np.mean(loss_all), 1.96*np.std(loss_all,0)/np.sqrt(len(loss_all))))
 
 
@@ -272,8 +294,9 @@ if __name__ == '__main__':
         mode_path = utils.get_path_from_args(args)
         #mode_path = '9b8290dd3f63cbafcd141ba21282c783'
         #mode_path =  'wefsd1234trhgfdsfretyutuytrefd33'
-        mode_path = str(args.seed)
-        path = '{}/{}_result_files/'.format(code_root, args.task) + mode_path
+        mode_path = str(args.seed) + str(args.model_name)
+        path = '{}/{}_result_files/{}'.format(code_root, args.task, mode_path)
+        print("model_path: {}".format(mode_path))
         logger = utils.load_obj(path)
         model = logger.valid_model[-1]
         dataloader_test = DataLoader(Metamovie(args,partition='test',test_way=args.test_way),#old, new_user, new_item, new_item_user

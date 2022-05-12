@@ -53,3 +53,38 @@ class user_preference_estimator(torch.nn.Module):
         x = self.final_part(x)
         return x
 
+
+
+class PD(torch.nn.Module):
+    def __init__(self, config):
+        super(PD, self).__init__()
+        self.embedding_dim = config.embedding_dim
+        self.fc1_in_dim = config.embedding_dim * 8
+        self.fc2_in_dim = config.first_fc_hidden_dim
+        self.fc2_out_dim = config.second_fc_hidden_dim
+
+        self.item_emb = item(config)
+        self.user_emb = user(config)
+        self.fc1 = Linear(self.fc1_in_dim, self.fc2_in_dim)
+        self.fc2 = Linear(self.fc2_in_dim, self.fc2_out_dim)
+        self.linear_out = Linear(self.fc2_out_dim, 1)
+        self.final_part = nn.Sequential(self.fc1, nn.ReLU(), self.fc2, nn.ReLU(), self.linear_out)
+    
+    def forward(self, x, training = True):
+        rate_idx = x[:, :, 0]
+        genre_idx = x[:, :, 1:26]
+        director_idx = x[:, :, 26:2212]
+        actor_idx = x[:, :, 2212:10242]
+        gender_idx = x[:, :, 10242]
+        age_idx = x[:, :, 10243]
+        occupation_idx = x[:, :, 10244]
+        area_idx = x[:, :, 10245]
+
+        item_emb = self.item_emb(rate_idx, genre_idx, director_idx, actor_idx)
+        user_emb = self.user_emb(gender_idx, age_idx, occupation_idx, area_idx)
+        x = torch.cat((item_emb, user_emb), -1)
+        x = self.final_part(x)
+        x = torch.nn.functional.elu(x)+1
+
+        return x
+
