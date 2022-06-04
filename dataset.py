@@ -73,6 +73,7 @@ def load_list(fname):
             list_.append(line.strip())
     return list_
 
+
 class Metamovie(Dataset):
     def __init__(self, args, partition='train', test_way=None, path=None):
         super(Metamovie, self).__init__()

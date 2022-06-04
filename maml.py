@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument('--test_way', type=str, default='old', help='')
     parser.add_argument('--eval_folder', type=str, default='eval_result', help='')
     parser.add_argument('--test', action='store_true', default=False, help='num of workers to use')
-    
+
     parser.add_argument('--embedding_dim', type=int, default=32, help='num of workers to use')
     parser.add_argument('--first_fc_hidden_dim', type=int, default=64, help='num of workers to use')
     parser.add_argument('--second_fc_hidden_dim', type=int, default=64, help='num of workers to use')
@@ -92,6 +92,12 @@ def run(args, log_interval=100, verbose=True, save_path=None):
     elif args.model_name == 'PD':
         print("PD")
         model = PD(args).cuda()
+    elif args.model_name == 'IPS':
+        print("IPS based on default preference estimator")
+        model = user_preference_estimator(args).cuda()
+    elif args.model_name == 'ColA':
+        print("ColA based on default preference estimator")
+        model = user_preference_estimator(args).cuda()
     else:
         print("Wrong model name")
         sys.exit(1)
@@ -117,6 +123,8 @@ def run(args, log_interval=100, verbose=True, save_path=None):
         for step, batch in enumerate(dataloader_train):
             x_spt = batch[0][0].cuda()
             x_qry = batch[1][0].cuda()
+            pop_spt = batch[4][0].cuda()
+            pop_qry = batch[5][0].cuda()
 
             # initialise meta-gradient
             meta_grad = copy.deepcopy(meta_grad_init)
@@ -125,19 +133,19 @@ def run(args, log_interval=100, verbose=True, save_path=None):
             #loss_pre.append(F.mse_loss(model(x_qry[i]), y_qry[i]).item())
             x_qry_pred = model(x_qry)
             if args.model_name == 'PD':
-                x_qry_pred = x_qry_pred *(batch[5][0].cuda()**0.1)
+                x_qry_pred = x_qry_pred *(pop_qry**0.1)
 
-            loss_pre.append(ranking_loss(x_qry_pred).item())
+            loss_pre.append(ranking_loss(x_qry_pred, args.model_name, pop_qry).item())
             fast_parameters = model.final_part.parameters()
             for weight in model.final_part.parameters():
                 weight.fast = None
             for k in range(args.num_grad_steps_inner):
                 logits = model(x_spt)
                 if args.model_name == 'PD':
-                    logits = logits *(batch[4][0].cuda()**0.1)
+                    logits = logits *(pop_spt**0.1)
 
                 #loss = F.mse_loss(logits, y_spt[i])
-                loss = ranking_loss(logits)
+                loss = ranking_loss(logits, args.model_name, pop_spt)
                 grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
                 fast_parameters = []
                 for k, weight in enumerate(model.final_part.parameters()):
@@ -149,11 +157,11 @@ def run(args, log_interval=100, verbose=True, save_path=None):
 
             logits_q = model(x_qry)
             if args.model_name == 'PD':
-                logits_q = logits_q *(batch[5][0].cuda()**0.1)
+                logits_q = logits_q *(pop_qry**0.1)
 
             # loss_q will be overwritten and just keep the loss_q on last update step.
-            #loss_q = F.mse_loss(logits_q, y_qry[i])
-            loss_q = ranking_loss(logits_q)
+            # loss_q = F.mse_loss(logits_q, y_qry[i])
+            loss_q = ranking_loss(logits_q, args.model_name, pop_qry)
             loss_after.append(loss_q.item())
             task_grad_test = torch.autograd.grad(loss_q, model.parameters())
 
@@ -203,7 +211,7 @@ def run(args, log_interval=100, verbose=True, save_path=None):
 
 
 
-def ranking_loss(predictions: torch.Tensor) -> torch.Tensor:
+def ranking_loss(predictions: torch.Tensor, model_name, observe_prob, reduction:str = 'mean') -> torch.Tensor:
     """
     BPR ranking loss with optimization on multiple negative samples
     @{Recurrent neural networks with top-k gains for session-based recommendations}
@@ -212,8 +220,55 @@ def ranking_loss(predictions: torch.Tensor) -> torch.Tensor:
     """
     pos_pred, neg_pred = predictions[:, 0], predictions[:, 1:2] # 1 pos : 1 neg
 
-    loss = - torch.nn.LogSigmoid()(pos_pred - neg_pred[:,0]).mean()
+    #loss = - torch.nn.LogSigmoid()(pos_pred - neg_pred[:,0]).mean()
+    ## ↑ For numerical stability, we use 'softplus(-x)' instead of '-log_sigmoid(x)'
+
+    neg_softmax = (neg_pred - neg_pred.max()).softmax(dim=1)
+    loss = -((pos_pred[:, None] - neg_pred).sigmoid() * neg_softmax).sum(dim=1).log()#.mean()
+    # neg_pred = (neg_pred * neg_softmax).sum(dim=1)
+    # loss = F.softplus(-(pos_pred - neg_pred)).mean()
     # ↑ For numerical stability, we use 'softplus(-x)' instead of '-log_sigmoid(x)'
+    if model_name == 'IPS':
+        PS = observe_prob[:, 0] # clip IPS to avoid overfitting
+        PS[PS<0.1] = 0.1
+        loss = loss/PS # popularity of positive sample
+    elif model_name == 'ColA':
+        # 0.125729 is the first tail item's popularity
+        thres = 0.125729
+
+        PS = observe_prob[:, 0] # upweight
+        head_sum = loss[PS>thres].mean().item()
+        tail_sum = loss[PS<=thres].mean().item()
+
+        upweight = tail_sum/head_sum
+
+        if np.isnan(upweight) or upweight<1:
+             upweight = 1
+
+        loss[PS<=thres] *= upweight
+
+        '''
+        print(PS)
+        print(head_sum)
+        print(tail_sum)
+        print(upweight)
+        print("total loss mean:{}".format(loss.mean()))
+        print("before")
+        print(loss[PS<=thres])
+        print(loss[PS>thres])
+        loss[PS<=thres] = loss[PS<=thres]*upweight
+        print("before1")
+        print(loss[PS<=thres])
+        print(loss[PS>thres])
+        loss[PS<=thres] *= upweight
+        print("before2")
+        print(loss[PS<=thres])
+        print(loss[PS>thres])
+        '''
+
+    if reduction == 'mean':
+        loss = loss.mean()
+
     return loss
 
 
@@ -228,6 +283,7 @@ def evaluate_test(args, model, dataloader, test_way):
     for idx, batch in tqdm(enumerate(dataloader)):
         x_spt = batch[0][0].cuda()
         x_qry = batch[1][0].cuda()
+        pop_spt = batch[4][0].cuda()
         for i in range(x_spt.shape[0]):
             # -------------- inner update --------------
             fast_parameters = model.final_part.parameters()
@@ -236,9 +292,9 @@ def evaluate_test(args, model, dataloader, test_way):
             for k in range(args.num_grad_steps_inner):
                 logits = model(x_spt)
                 if args.model_name == 'PD':
-                    logits = logits *(batch[4][0].cuda()**0.1)
+                    logits = logits *(pop_spt**0.1)
                 #loss = F.mse_loss(logits, y_spt[i])
-                loss = ranking_loss(logits)
+                loss = ranking_loss(logits, args.model_name, pop_spt)
                 grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
                 fast_parameters = []
                 for k, weight in enumerate(model.final_part.parameters()):
