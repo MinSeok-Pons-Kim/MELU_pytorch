@@ -1,35 +1,35 @@
 
-#CUDA_VISIBLE_DEVICES=0 python maml.py --model_name ColA --seed 0
-CUDA_VISIBLE_DEVICES=1 python maml.py --model_name ColA --seed 1 &
-CUDA_VISIBLE_DEVICES=1 python maml.py --model_name ColA --seed 2 &
-CUDA_VISIBLE_DEVICES=0 python maml.py --model_name ColA --seed 3 &
-CUDA_VISIBLE_DEVICES=0 python maml.py --model_name ColA --seed 4 &
-CUDA_VISIBLE_DEVICES=1 python maml.py --model_name ColA --seed 5 &
-
-wait
-
-
-CUDA_VISIBLE_DEVICES=1 python maml.py --seed 0 --model_name ColA --test --test_way  old_user &
-CUDA_VISIBLE_DEVICES=1 python maml.py --seed 0 --model_name ColA --test --test_way  new_user &
-
-CUDA_VISIBLE_DEVICES=0 python maml.py --seed 1 --model_name ColA --test --test_way  old_user &
-CUDA_VISIBLE_DEVICES=0 python maml.py --seed 1 --model_name ColA --test --test_way  new_user &
-wait
-CUDA_VISIBLE_DEVICES=1 python maml.py --seed 2 --model_name ColA --test --test_way  old_user &
-CUDA_VISIBLE_DEVICES=1 python maml.py --seed 2 --model_name ColA --test --test_way  new_user &
-
-CUDA_VISIBLE_DEVICES=0 python maml.py --seed 3 --model_name ColA --test --test_way  old_user &
-CUDA_VISIBLE_DEVICES=0 python maml.py --seed 3 --model_name ColA --test --test_way  new_user &
-wait
-
-CUDA_VISIBLE_DEVICES=1 python maml.py --seed 4 --model_name ColA --test --test_way  old_user &
-CUDA_VISIBLE_DEVICES=1 python maml.py --seed 4 --model_name ColA --test --test_way  new_user &
-
-CUDA_VISIBLE_DEVICES=0 python maml.py --seed 5 --model_name ColA --test --test_way  old_user &
-CUDA_VISIBLE_DEVICES=0 python maml.py --seed 5 --model_name ColA --test --test_way  new_user &
-
-wait
+CUDA_VISIBLE_DEVICES=0 python maml.py --model_name ColReg --seed 1
 '''
+CUDA_VISIBLE_DEVICES=1 python maml.py --model_name ColReg --seed 1 --rerun &
+CUDA_VISIBLE_DEVICES=1 python maml.py --model_name ColReg --seed 2 --rerun &
+CUDA_VISIBLE_DEVICES=0 python maml.py --model_name ColReg --seed 3 --rerun &
+CUDA_VISIBLE_DEVICES=0 python maml.py --model_name ColReg --seed 4 --rerun &
+CUDA_VISIBLE_DEVICES=1 python maml.py --model_name ColReg --seed 5 --rerun &
+
+wait
+
+
+CUDA_VISIBLE_DEVICES=1 python maml.py --seed 0 --model_name ColReg --test --test_way  old_user &
+CUDA_VISIBLE_DEVICES=1 python maml.py --seed 0 --model_name ColReg --test --test_way  new_user &
+
+CUDA_VISIBLE_DEVICES=0 python maml.py --seed 1 --model_name ColReg --test --test_way  old_user &
+CUDA_VISIBLE_DEVICES=0 python maml.py --seed 1 --model_name ColReg --test --test_way  new_user &
+wait
+CUDA_VISIBLE_DEVICES=1 python maml.py --seed 2 --model_name ColReg --test --test_way  old_user &
+CUDA_VISIBLE_DEVICES=1 python maml.py --seed 2 --model_name ColReg --test --test_way  new_user &
+
+CUDA_VISIBLE_DEVICES=0 python maml.py --seed 3 --model_name ColReg --test --test_way  old_user &
+CUDA_VISIBLE_DEVICES=0 python maml.py --seed 3 --model_name ColReg --test --test_way  new_user &
+wait
+
+CUDA_VISIBLE_DEVICES=1 python maml.py --seed 4 --model_name ColReg --test --test_way  old_user &
+CUDA_VISIBLE_DEVICES=1 python maml.py --seed 4 --model_name ColReg --test --test_way  new_user &
+
+CUDA_VISIBLE_DEVICES=0 python maml.py --seed 5 --model_name ColReg --test --test_way  old_user &
+CUDA_VISIBLE_DEVICES=0 python maml.py --seed 5 --model_name ColReg --test --test_way  new_user &
+
+wait
 CUDA_VISIBLE_DEVICES=0 python maml.py  --seed 0 &
 CUDA_VISIBLE_DEVICES=1 python maml.py  --seed 1 &
 CUDA_VISIBLE_DEVICES=1 python maml.py  --seed 2 &

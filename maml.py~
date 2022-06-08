@@ -98,6 +98,9 @@ def run(args, log_interval=100, verbose=True, save_path=None):
     elif args.model_name == 'ColA':
         print("ColA based on default preference estimator")
         model = user_preference_estimator(args).cuda()
+    elif args.model_name == 'ColReg':
+        print("ColReg based on default preference estimator")
+        model = user_preference_estimator(args).cuda()
     else:
         print("Wrong model name")
         sys.exit(1)
@@ -247,28 +250,27 @@ def ranking_loss(predictions: torch.Tensor, model_name, observe_prob, reduction:
 
         loss[PS<=thres] *= upweight
 
-        '''
-        print(PS)
-        print(head_sum)
-        print(tail_sum)
-        print(upweight)
-        print("total loss mean:{}".format(loss.mean()))
-        print("before")
-        print(loss[PS<=thres])
-        print(loss[PS>thres])
-        loss[PS<=thres] = loss[PS<=thres]*upweight
-        print("before1")
-        print(loss[PS<=thres])
-        print(loss[PS>thres])
-        loss[PS<=thres] *= upweight
-        print("before2")
-        print(loss[PS<=thres])
-        print(loss[PS>thres])
-        '''
+    elif model_name == 'ColReg':
+        # 0.125729 is the first tail item's popularity
+        thres = 0.125729
+
+        PS = observe_prob[:, 0] # upweight
+        head_sum = loss[PS>thres].mean()#.item()
+        tail_sum = loss[PS<=thres].mean()#.item()
 
     if reduction == 'mean':
         loss = loss.mean()
 
+    if model_name == 'ColReg':
+        eq_opp = head_sum-tail_sum
+        print(eq_opp)
+        print('before:{}'.format(loss))
+        if not np.isnan(eq_opp.item()):
+            if eq_opp>=0:
+                loss += eq_opp
+            else:
+                loss -= eq_opp
+        print('after:{}'.format(loss))
 
     return loss
 
