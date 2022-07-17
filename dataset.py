@@ -12,6 +12,34 @@ import pandas as pd
 import json
 from tqdm import tqdm
 
+
+
+class bookcrossing(object):
+    def __init__(self):
+        self.user_data, self.item_data, self.score_data = self.load()
+
+    def load(self):
+        path = "bookcrossing/preprocessed"
+        profile_data_path = "{}/Users.csv".format(path)
+        score_data_path = "{}/Ratings.csv".format(path)
+        item_data_path = "{}/Books.csv".format(path)
+
+        profile_data = pd.read_csv(
+            profile_data_path, names=['User-ID', 'Location', 'Age']
+        )
+        item_data = pd.read_csv(
+            item_data_path, names=['Book-Author', 'Year-Of-Publication', 'Publisher', 'Item-ID'],
+        )
+        score_data = pd.read_csv(
+            score_data_path, names=['User-ID', 'Book-Rating', 'Item-ID'],
+        )
+
+        self.n_users, self.n_items = score_data.user_id.max()+1, score_data.movie_id.max()+1
+        self.item_ids =  score_data.movie_id.unique()
+        return profile_data, item_data, score_data
+    
+
+
 class movielens_1m(object):
     def __init__(self):
         self.user_data, self.item_data, self.score_data = self.load()
@@ -166,40 +194,6 @@ class Metamovie(Dataset):
         self.test_popularity = torch.empty([1, 3704, 1], dtype=torch.long)
         for idx, item_id in enumerate(self.dataset.item_ids):
             self.test_popularity[0, idx, 0] = pop_dict[item_id]
-
-    ''' 
-    # function for explicit feedback (original)
-    def __getitem__(self, item):
-        user_id = self.final_index[item]
-        u_id = int(user_id)
-        seen_movie_len = len(self.dataset_split[str(u_id)])
-        indices = list(range(seen_movie_len))
-        random.shuffle(indices)
-        tmp_x = np.array(self.dataset_split[str(u_id)])
-        tmp_y = np.array(self.dataset_split_y[str(u_id)])
-        
-        # (# of user-item interactions, feature_size)
-        support_x_app = None
-        for m_id in tmp_x[indices[:-10]]:
-            m_id = int(m_id)
-            tmp_x_converted = torch.cat((self.movie_dict[m_id], self.user_dict[u_id]), 1)
-            try:
-                support_x_app = torch.cat((support_x_app, tmp_x_converted), 0)
-            except:
-                support_x_app = tmp_x_converted
-        query_x_app = None
-        for m_id in tmp_x[indices[-10:]]:
-            m_id = int(m_id)
-            u_id = int(user_id)
-            tmp_x_converted = torch.cat((self.movie_dict[m_id], self.user_dict[u_id]), 1)
-            try:
-                query_x_app = torch.cat((query_x_app, tmp_x_converted), 0)
-            except:
-                query_x_app = tmp_x_converted
-        support_y_app = torch.FloatTensor(tmp_y[indices[:-10]])
-        query_y_app = torch.FloatTensor(tmp_y[indices[-10:]])
-        return support_x_app, support_y_app.view(-1,1), query_x_app, query_y_app.view(-1,1)
-    ''' 
 
     # function for implicit feedback
     # retrieve user-wise interaction history and a random negative item

@@ -38,6 +38,8 @@ def parse_args():
     parser.add_argument('--data_root', type=str, default="./movielens/ml-1m", help='path to data root')
     parser.add_argument('--num_workers', type=int, default=4, help='num of workers to use')
     parser.add_argument('--model_name', type=str, default='', help='')
+    parser.add_argument('--lambd', type=str, default='', help='')
+    parser.add_argument('--meta_hid', type=str, default='', help='')
     parser.add_argument('--metric', type=str, default='["NDCG","HR"]', help='metrics: NDCG, HR')
     parser.add_argument('--test_way', type=str, default='old', help='')
     parser.add_argument('--eval_folder', type=str, default='eval_result', help='')
@@ -71,7 +73,7 @@ def run(args, log_interval=100, verbose=True, save_path=None):
     if not os.path.isdir('{}/{}_result_files/'.format(code_root, args.task)):
         os.mkdir('{}/{}_result_files/'.format(code_root, args.task))
     #path = '{}/{}_result_files/'.format(code_root, args.task) + utils.get_path_from_args(args)
-    path = '{}/{}_result_files/'.format(code_root, args.task) + str(args.seed) + str(args.model_name)
+    path = '{}/{}_result_files/'.format(code_root, args.task) + str(args.seed) + str(args.model_name) + str(args.lambd)+ str(args.meta_hid)
     print('File saved in {}'.format(path))
 
     if os.path.exists(path + '.pkl') and not args.rerun:
@@ -86,6 +88,7 @@ def run(args, log_interval=100, verbose=True, save_path=None):
     # -------------------- training ---------------------------
 
     # initialise model
+    meta_model = None
     if args.model_name == '':
         print("default preference estimator")
         model = user_preference_estimator(args).cuda()
@@ -101,6 +104,26 @@ def run(args, log_interval=100, verbose=True, save_path=None):
     elif args.model_name == 'ColReg':
         print("ColReg based on default preference estimator")
         model = user_preference_estimator(args).cuda()
+    elif args.model_name == 'ColM':
+        print("ColM based on default preference estimator")
+        model = user_preference_estimator(args).cuda()
+        meta_model = MNet(3, int(args.meta_hid)).cuda()
+        ColM_optim = torch.optim.Adam(meta_model.parameters(), args.lr_meta)
+    elif args.model_name == 'ColMS':
+        print("ColMS based on default preference estimator")
+        model = user_preference_estimator(args).cuda()
+        meta_model = MNetS(3, int(args.meta_hid)).cuda()
+        ColM_optim = torch.optim.Adam(meta_model.parameters(), args.lr_meta)
+    elif args.model_name == 'ColMU':
+        print("ColMU based on default preference estimator")
+        model = user_preference_estimator(args).cuda()
+        meta_model = MNet(3, int(args.meta_hid)).cuda()
+        ColM_optim = torch.optim.Adam(meta_model.parameters(), args.lr_meta)
+    elif args.model_name == 'ColMSU':
+        print("ColMSU based on default preference estimator")
+        model = user_preference_estimator(args).cuda()
+        meta_model = MNetS(3, int(args.meta_hid)).cuda()
+        ColM_optim = torch.optim.Adam(meta_model.parameters(), args.lr_meta)
     else:
         print("Wrong model name")
         sys.exit(1)
@@ -116,6 +139,7 @@ def run(args, log_interval=100, verbose=True, save_path=None):
     logger.args = args
     # initialise the starting point for the meta gradient (it's faster to copy this than to create new object)
     meta_grad_init = [0 for _ in range(len(model.state_dict()))]
+    thres = 0.125729
     dataloader_train = DataLoader(Metamovie(args), shuffle=True,
                                      batch_size=1,num_workers=args.num_workers)
     for epoch in range(args.num_epoch):
@@ -138,17 +162,60 @@ def run(args, log_interval=100, verbose=True, save_path=None):
             if args.model_name == 'PD':
                 x_qry_pred = x_qry_pred *(pop_qry**0.1)
 
-            loss_pre.append(ranking_loss(x_qry_pred, args.model_name, pop_qry).item())
+            loss_pre.append(ranking_loss(x_qry_pred, args.model_name, pop_qry, args, meta_model).item())
             fast_parameters = model.final_part.parameters()
             for weight in model.final_part.parameters():
                 weight.fast = None
             for k in range(args.num_grad_steps_inner):
+                if args.model_name in ['ColM', 'ColMS', 'ColMU', 'ColMSU'] and (pop_spt[:, 0]>thres).sum() not in [0, len(pop_spt)]: # meta-update
+                    # skip update if no head or tail-items
+
+                    logits = model(x_spt)
+                    # reweight and update
+                    loss = ranking_loss(logits, args.model_name, pop_spt, args, meta_model)
+                    grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
+                    for k, weight in enumerate(model.final_part.parameters()):
+                        if weight.fast is None:
+                            weight.fast = weight - args.lr_inner * grad[k] #create weight.fast
+                        else:
+                            weight.fast = weight.fast - args.lr_inner * grad[k]
+
+                    # train meta-model with updated recommender
+                    logits = model(x_spt)
+                    pos_pred, neg_pred = logits[:, 0], logits[:, 1:2] # 1 pos : 1 neg
+                    neg_softmax = (neg_pred - neg_pred.max()).softmax(dim=1)
+                    loss = -((pos_pred[:, None] - neg_pred).sigmoid() * neg_softmax).sum(dim=1).log()#.mean()
+
+                    PS = pop_spt[:, 0] # upweight
+                    head_sum = loss[PS>thres].mean()#.item()
+                    tail_sum = loss[PS<=thres].mean()#.item()
+                    if np.isnan(head_sum.item()) or np.isnan(tail_sum.item()):
+                        print("NAN")
+
+                    fair_loss = head_sum - tail_sum
+                    if fair_loss<0: fair_loss *= -1
+
+                    #print('fair_loss: {}'.format(fair_loss))
+
+                    ColM_optim.zero_grad()
+                    # check meta-model gradient
+                    fair_loss.backward()
+                    ColM_optim.step()
+
+                    # re-initialize model
+                    for weight in model.final_part.parameters():
+                        weight.fast = None
+                    fast_parameters = model.final_part.parameters()
+
+                    # Check meta-model weight
+                    # Check recommender weight
+
                 logits = model(x_spt)
                 if args.model_name == 'PD':
                     logits = logits *(pop_spt**0.1)
 
                 #loss = F.mse_loss(logits, y_spt[i])
-                loss = ranking_loss(logits, args.model_name, pop_spt)
+                loss = ranking_loss(logits, args.model_name, pop_spt, args, meta_model)
                 grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
                 fast_parameters = []
                 for k, weight in enumerate(model.final_part.parameters()):
@@ -164,7 +231,7 @@ def run(args, log_interval=100, verbose=True, save_path=None):
 
             # loss_q will be overwritten and just keep the loss_q on last update step.
             # loss_q = F.mse_loss(logits_q, y_qry[i])
-            loss_q = ranking_loss(logits_q, args.model_name, pop_qry)
+            loss_q = ranking_loss(logits_q, args.model_name, pop_qry, args, meta_model)
             loss_after.append(loss_q.item())
             task_grad_test = torch.autograd.grad(loss_q, model.parameters())
 
@@ -208,13 +275,47 @@ def run(args, log_interval=100, verbose=True, save_path=None):
         if epoch % (2) == 0:
             print('saving model at iter', epoch)
             logger.valid_model.append(copy.deepcopy(model))
+            logger.meta_model.append(copy.deepcopy(meta_model))
 
 
     return logger, model
 
 
 
-def ranking_loss(predictions: torch.Tensor, model_name, observe_prob, reduction:str = 'mean') -> torch.Tensor:
+# Meta Network
+import torch.nn as nn
+import torch.nn.functional as F
+class MNet(nn.Module):
+    def __init__(self, input_dim, hidden):
+        super(MNet, self).__init__()
+        # input = [tail ratio, head_loss, tail_loss]
+        self.linear1 = nn.Linear(input_dim, hidden)
+        self.linear2 = nn.Linear(hidden, 1)
+
+    def forward(self, x):
+        x = self.linear2(F.relu(self.linear1(x)))
+        return torch.nn.functional.softplus(x)
+
+
+
+
+# Meta Network
+import torch.nn as nn
+import torch.nn.functional as F
+class MNetS(nn.Module):
+    def __init__(self, input_dim, hidden):
+        super(MNetS, self).__init__()
+        # input = [tail ratio, head_loss, tail_loss]
+        self.linear1 = nn.Linear(input_dim, hidden)
+        self.linear2 = nn.Linear(hidden, 1)
+
+    def forward(self, x):
+        x = self.linear2(F.relu(self.linear1(x)))
+        return torch.nn.functional.sigmoid(x)+0.5
+
+
+
+def ranking_loss(predictions: torch.Tensor, model_name, observe_prob, args, meta_model, reduction:str = 'mean') -> torch.Tensor:
     """
     BPR ranking loss with optimization on multiple negative samples
     @{Recurrent neural networks with top-k gains for session-based recommendations}
@@ -257,6 +358,22 @@ def ranking_loss(predictions: torch.Tensor, model_name, observe_prob, reduction:
         PS = observe_prob[:, 0] # upweight
         head_sum = loss[PS>thres].mean()#.item()
         tail_sum = loss[PS<=thres].mean()#.item()
+    elif model_name in ['ColM', 'ColMS', 'ColMU', 'ColMSU']:
+        # 0.125729 is the first tail item's popularity
+        thres = 0.125729
+
+        PS = observe_prob[:, 0] # upweight
+        if (PS>thres).sum() in [0, len(PS)]:
+            return loss.mean()
+
+        head_sum = loss[PS>thres].mean()#.item()
+        tail_sum = loss[PS<=thres].mean()#.item()
+        #print('head ratio:', len(loss[PS>thres])/len(loss))
+        meta_input = torch.tensor([head_sum, tail_sum, len(loss[PS>thres])/len(loss)]).cuda()
+        reweight = meta_model(meta_input)
+        #print(head_sum + reweight*tail_sum)
+        return head_sum + reweight*tail_sum
+
 
     if reduction == 'mean':
         loss = loss.mean()
@@ -264,15 +381,16 @@ def ranking_loss(predictions: torch.Tensor, model_name, observe_prob, reduction:
     if model_name == 'ColReg':
         eq_opp = head_sum-tail_sum
         if not np.isnan(eq_opp.item()):
+            lambd = float(args.lambd)/10
             if eq_opp>=0:
-                loss += eq_opp
+                loss += lambd*eq_opp
             else:
-                loss -= eq_opp
+                loss -= lambd*eq_opp
 
     return loss
 
 
-def evaluate_test(args, model, dataloader, test_way):
+def evaluate_test(args, model, meta_model, dataloader, test_way):
     model.eval()
     loss_all = []
     n_users = len(dataloader)
@@ -280,6 +398,7 @@ def evaluate_test(args, model, dataloader, test_way):
     predictions = torch.empty([n_users, 3704])
     supports = []
     print("Test!")
+
     for idx, batch in tqdm(enumerate(dataloader)):
         x_spt = batch[0][0].cuda()
         x_qry = batch[1][0].cuda()
@@ -294,7 +413,7 @@ def evaluate_test(args, model, dataloader, test_way):
                 if args.model_name == 'PD':
                     logits = logits *(pop_spt**0.1)
                 #loss = F.mse_loss(logits, y_spt[i])
-                loss = ranking_loss(logits, args.model_name, pop_spt)
+                loss = ranking_loss(logits, args.model_name, pop_spt, args, meta_model)
                 grad = torch.autograd.grad(loss, fast_parameters, create_graph=True)
                 fast_parameters = []
                 for k, weight in enumerate(model.final_part.parameters()):
@@ -311,9 +430,9 @@ def evaluate_test(args, model, dataloader, test_way):
             # save prediction result
             #loss_all.append(F.l1_loss(y_qry[i], model(x_qry[i])).item())
         supports.append(batch[3][0].tolist())
-    torch.save(supports, '_'.join([args.eval_folder+'/', 'total_sup', test_way+args.model_name, str(args.seed), '.pt']))
-    torch.save(predictions, '_'.join([args.eval_folder+'/', 'total_preds', test_way+args.model_name, str(args.seed), '.pt']))
-    torch.save(item_idx, '_'.join([args.eval_folder+'/', 'total_item_idx', test_way+args.model_name, str(args.seed), '.pt']))
+    torch.save(supports, '_'.join([args.eval_folder+'/', 'total_sup', test_way+args.model_name+args.lambd+args.meta_hid, str(args.seed), '.pt']))
+    torch.save(predictions, '_'.join([args.eval_folder+'/', 'total_preds', test_way+args.model_name+args.lambd+args.meta_hid, str(args.seed), '.pt']))
+    torch.save(item_idx, '_'.join([args.eval_folder+'/', 'total_item_idx', test_way+args.model_name+args.lambd+args.meta_hid, str(args.seed), '.pt']))
     #print('{}+/-{}'.format(np.mean(loss_all), 1.96*np.std(loss_all,0)/np.sqrt(len(loss_all))))
 
 
@@ -350,12 +469,21 @@ if __name__ == '__main__':
         mode_path = utils.get_path_from_args(args)
         #mode_path = '9b8290dd3f63cbafcd141ba21282c783'
         #mode_path =  'wefsd1234trhgfdsfretyutuytrefd33'
-        mode_path = str(args.seed) + str(args.model_name)
+        mode_path = str(args.seed) + str(args.model_name)+ str(args.lambd) + str(args.meta_hid)
         path = '{}/{}_result_files/{}'.format(code_root, args.task, mode_path)
         print("model_path: {}".format(mode_path))
         logger = utils.load_obj(path)
-        model = logger.valid_model[-1]
+        if args.model_name in ['ColM', 'ColMS', 'ColMU', 'ColMSU']:
+            try:
+                meta_model = logger.meta_model[-1]
+                model = logger.valid_model[-1]
+            except Exception as e:
+                model = logger.valid_model[-2]
+                meta_model = logger.valid_model[-1]
+        else:
+            model = logger.valid_model[-1]
+            meta_model = None
         dataloader_test = DataLoader(Metamovie(args,partition='test',test_way=args.test_way),#old, new_user, new_item, new_item_user
                                      batch_size=1,num_workers=args.num_workers)
-        evaluate_test(args, model, dataloader_test, args.test_way)
+        evaluate_test(args, model, meta_model, dataloader_test, args.test_way)
     # --- settings ---

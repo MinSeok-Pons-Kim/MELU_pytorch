@@ -23,6 +23,7 @@ class Logger:
         self.best_decoder_model = None
         self.best_g_valid_model = None
         
+        self.meta_model = []
         self.valid_model = []
         self.encoder_valid_model = []
         self.place_valid_model = []
